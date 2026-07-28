@@ -2,12 +2,15 @@ package firmwareproxy
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -22,6 +25,8 @@ import (
 )
 
 const FirmwareBundleArtifactType = "application/vnd.openchami.firmware.bundle.v1+json"
+
+const envRepositoryInsecureTLS = "FIRMWARE_UPDATER_REPOSITORY_INSECURE_TLS"
 
 const (
 	annotationCompatibleHardware = "dev.fabrica.hardware.compatible"
@@ -68,6 +73,17 @@ type authConfig struct {
 var payloadIndex sync.Map
 var authState sync.RWMutex
 var globalAuthConfig authConfig
+
+// INSECURE CALL: this HTTP client skips TLS certificate verification for every
+// OCI registry request. It exists only so we can talk to the registry's
+// self-signed cert. FIXME: remove and trust a proper CA before production.
+var insecureRegistryHTTPClient = &http.Client{
+	Transport: &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+		// INSECURE CALL: TLS verification disabled for OCI registry connections.
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // INSECURE CALL: fix later
+	},
+}
 
 // InitAuth configures global OCI registry credentials used by ORAS remote repositories.
 func InitAuth(username, password string) {
@@ -471,17 +487,46 @@ func applyRepoAuth(repo *remote.Repository) {
 	username := globalAuthConfig.username
 	password := globalAuthConfig.password
 	authState.RUnlock()
+	useInsecureTLS := repositoryInsecureTLS()
 
 	if username == "" || password == "" {
+		if !useInsecureTLS {
+			return
+		}
+
+		repo.Client = &auth.Client{
+			Client: insecureRegistryHTTPClient,
+			Cache:  auth.NewCache(),
+		}
 		return
 	}
 
-	repo.Client = &auth.Client{
-		Client: http.DefaultClient,
+	httpClient := http.DefaultClient
+	if useInsecureTLS {
+		httpClient = insecureRegistryHTTPClient
+	}
+
+	client := &auth.Client{
+		Client: httpClient,
 		Credential: auth.StaticCredential(repo.Reference.Registry, auth.Credential{
 			Username: username,
 			Password: password,
 		}),
 		Cache: auth.NewCache(),
 	}
+	repo.Client = client
+}
+
+func repositoryInsecureTLS() bool {
+	value := strings.TrimSpace(os.Getenv(envRepositoryInsecureTLS))
+	if value == "" {
+		return false
+	}
+
+	parsed, err := strconv.ParseBool(value)
+	if err == nil {
+		return parsed
+	}
+
+	return false
 }

@@ -143,6 +143,7 @@ func TestIsCompatibleHardware(t *testing.T) {
 }
 
 func TestApplyRepoAuthConfigured(t *testing.T) {
+	t.Setenv(envRepositoryInsecureTLS, "false")
 	InitAuth("test-user", "test-pass")
 	t.Cleanup(func() { InitAuth("", "") })
 
@@ -158,6 +159,7 @@ func TestApplyRepoAuthConfigured(t *testing.T) {
 }
 
 func TestApplyRepoAuthMissingCredentials(t *testing.T) {
+	t.Setenv(envRepositoryInsecureTLS, "false")
 	InitAuth("", "")
 
 	repo, err := remote.NewRepository("example.com/fw/repo")
@@ -168,5 +170,43 @@ func TestApplyRepoAuthMissingCredentials(t *testing.T) {
 	applyRepoAuth(repo)
 	if repo.Client != nil {
 		t.Fatalf("expected repo client to remain nil when credentials are missing")
+	}
+}
+
+func TestApplyRepoAuthMissingCredentialsInsecureTLS(t *testing.T) {
+	t.Setenv(envRepositoryInsecureTLS, "true")
+	InitAuth("", "")
+
+	repo, err := remote.NewRepository("example.com/fw/repo")
+	if err != nil {
+		t.Fatalf("remote.NewRepository returned error: %v", err)
+	}
+
+	applyRepoAuth(repo)
+	if repo.Client == nil {
+		t.Fatalf("expected repo client to be configured when insecure TLS is enabled")
+	}
+}
+
+func TestRepositoryInsecureTLSDefaultAndInvalid(t *testing.T) {
+	t.Setenv(envRepositoryInsecureTLS, "")
+	if repositoryInsecureTLS() {
+		t.Fatalf("expected secure default when env var is unset")
+	}
+
+	t.Setenv(envRepositoryInsecureTLS, "not-a-bool")
+	if repositoryInsecureTLS() {
+		t.Fatalf("expected invalid env values to fall back to secure mode")
+	}
+}
+
+func TestRepositoryInsecureTLSTrueValues(t *testing.T) {
+	trueValues := []string{"true", "1", "TRUE"}
+
+	for _, value := range trueValues {
+		t.Setenv(envRepositoryInsecureTLS, value)
+		if !repositoryInsecureTLS() {
+			t.Fatalf("expected %q to enable insecure TLS", value)
+		}
 	}
 }
