@@ -87,14 +87,20 @@ func (r *FirmwareUpdateJobReconciler) reconcileFirmwareUpdateJob(ctx context.Con
 
 	var (
 		payloadDigest   string
+		payloadFilename string
 		resolvedVersion string
 		resolvedRef     string
 		err             error
 	)
 
 	if res.Spec.OCIReference != nil {
-		payloadDigest, err = resolvePayloadWithBackoff(ctx, *res.Spec.OCIReference)
-		resolvedRef = *res.Spec.OCIReference
+		resolved, resolveErr := resolvePayloadWithBackoff(ctx, *res.Spec.OCIReference)
+		err = resolveErr
+		if resolveErr == nil {
+			payloadDigest = resolved.Digest
+			payloadFilename = resolved.PayloadFilename
+			resolvedRef = resolved.OCIReference
+		}
 	} else if res.Spec.Discovery != nil {
 		resolved, resolveErr := resolvePayloadFromDiscoveryWithBackoff(
 			ctx,
@@ -105,6 +111,7 @@ func (r *FirmwareUpdateJobReconciler) reconcileFirmwareUpdateJob(ctx context.Con
 		err = resolveErr
 		if resolveErr == nil {
 			payloadDigest = resolved.Digest
+			payloadFilename = resolved.PayloadFilename
 			resolvedVersion = resolved.Version
 			resolvedRef = resolved.OCIReference
 		}
@@ -132,6 +139,7 @@ func (r *FirmwareUpdateJobReconciler) reconcileFirmwareUpdateJob(ctx context.Con
 
 	res.Status.ResolvedDigest = payloadDigest
 	res.Status.ResolvedVersion = resolvedVersion
+	res.Status.PayloadFilename = payloadFilename
 	r.Logger.Debugf("FirmwareUpdateJob %s resolved payload digest %q from %q", res.GetUID(), payloadDigest, resolvedRef)
 
 	creds, err := loadBMCCredentials(res.Spec.SecretID)
@@ -390,14 +398,14 @@ func (r *FirmwareUpdateJobReconciler) observeInProgressFirmwareUpdateJob(ctx con
 	return nil
 }
 
-func resolvePayloadWithBackoff(ctx context.Context, ociReference string) (string, error) {
+func resolvePayloadWithBackoff(ctx context.Context, ociReference string) (firmwareproxy.DiscoveryResult, error) {
 	var lastErr error
 	backoff := time.Second
 
 	for attempt := 1; attempt <= 4; attempt++ {
-		payloadDigest, err := firmwareproxy.ResolvePayload(ctx, ociReference)
+		resolved, err := firmwareproxy.ResolvePayload(ctx, ociReference)
 		if err == nil {
-			return payloadDigest, nil
+			return resolved, nil
 		}
 
 		lastErr = err
@@ -406,12 +414,12 @@ func resolvePayloadWithBackoff(ctx context.Context, ociReference string) (string
 		}
 
 		if waitErr := sleepWithContext(ctx, backoff); waitErr != nil {
-			return "", waitErr
+			return firmwareproxy.DiscoveryResult{}, waitErr
 		}
 		backoff *= 2
 	}
 
-	return "", lastErr
+	return firmwareproxy.DiscoveryResult{}, lastErr
 }
 
 func resolvePayloadFromDiscoveryWithBackoff(ctx context.Context, repository, hardwareModel, versionTarget string) (firmwareproxy.DiscoveryResult, error) {
